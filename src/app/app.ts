@@ -1,5 +1,6 @@
 import { App } from "@microsoft/teams.apps";
 import { ChatPrompt } from "@microsoft/teams.ai";
+import { McpClientPlugin } from "@microsoft/teams.mcpclient";
 import { LocalStorage } from "@microsoft/teams.common";
 import { OpenAIChatModel } from "@microsoft/teams.openai";
 import { MessageActivity, TokenCredentials } from '@microsoft/teams.api';
@@ -47,13 +48,25 @@ const app = new App({
   ...credentialOptions,
   storage,
   skipAuth: !process.env.CLIENT_ID,
+  oauth: {
+    // Azure Bot Service OAuth connection name for GitHub sign-in
+    defaultConnectionName: "github-oauth",
+  },
 });
 
 // Handle incoming messages
-app.on('message', async ({ send, stream, activity }) => {
+app.on('message', async ({ send, stream, activity, log, signin }) => {
   //Get conversation history
   const conversationKey = `${activity.conversation.id}/${activity.from.id}`;
   const messages = storage.get(conversationKey) || [];
+
+  // Ensure the user is signed in to GitHub and obtain their access token.
+  // If not signed in, this triggers the OAuth sign-in flow and returns once complete.
+  const userToken = await signin();
+  if (!userToken) {
+    log.error('User token is not available. Please sign in first.');
+    return;
+  }
 
   try {
     const prompt = new ChatPrompt({
@@ -65,7 +78,15 @@ app.on('message', async ({ send, stream, activity }) => {
         endpoint: config.azureOpenAIEndpoint,
         apiVersion: "2024-10-21"
       })
-    })
+    }, [new McpClientPlugin()])
+      .usePlugin('mcpClient', {
+        url: 'https://api.githubcopilot.com/mcp/',
+        params: {
+          headers: {
+            'Authorization': `Bearer ${userToken}`,
+          }
+        }
+      })
 
     if (activity.conversation.isGroup) {
       // If the conversation is a group chat, we need to send the final response
